@@ -505,8 +505,14 @@ class SuperMimicRunner(BaseRunner[SuperMimicRunnerCfg]):
 
   def _init_policy(self) -> None:
     actor = build_actor(self.cfg, self._wm, self.device)
+    # The first task is the motion anchor used by the WM env and latent BC.
+    # Keep its goal even when it has no action slots; slot_mix still controls
+    # which encoder produces each action.
     self._active_task_specs = [
-      ts for ts in actor.task_specs if self.cfg.slot_mix.get(ts.name, 0.0) > 0.0
+      ts
+      for ts in actor.task_specs
+      if ts.name == actor.task_specs[0].name
+      or self.cfg.slot_mix.get(ts.name, 0.0) > 0.0
     ]
 
     print("[INFO] Sim slot ranges:")
