@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,9 @@ from supermimic.utils.wandb_artifacts import (
 
 @dataclass
 class PlayConfig:
-  wandb_path: str
+  wandb_path: str | None = None
+  model_dir: str | None = None
+  """Local dir with world_model.pt, actor.pt and config.json (offline, no W&B)."""
   motion_file: str | None = None
   initial_task: Literal["motion", "velocity"] = "motion"
   """Task selected when the viewer opens. Switch live via the GUI dropdown."""
@@ -51,14 +54,25 @@ def play(task_id: str, cfg: PlayConfig) -> None:
   env_cfg.scene.num_envs = 1
   env_cfg.observations["actor"].enable_corruption = True
 
-  import wandb
+  if cfg.model_dir is not None:
+    local_dir = Path(cfg.model_dir).expanduser()
+    config_path = local_dir / "config.json"
+    if not config_path.exists():
+      raise ValueError(f"--model-dir {local_dir} has no config.json")
+    print(f"[INFO] Loading local checkpoint dir: {local_dir}")
+    runner_cfg = load_runner_cfg(json.loads(config_path.read_text()))
+    check_representation_matches(task_id, runner_cfg.representation)
+    motion_artifacts = []
+  else:
+    if cfg.wandb_path is None:
+      raise ValueError("Provide either --wandb-path or --model-dir")
+    import wandb
 
-  print(f"[INFO] Connecting to WandB run: {cfg.wandb_path}")
-  run = wandb.Api().run(cfg.wandb_path)
-  runner_cfg = load_runner_cfg(run.config)
-  check_representation_matches(task_id, runner_cfg.representation)
-
-  motion_artifacts = [a for a in run.used_artifacts() if a.type == "motions"]
+    print(f"[INFO] Connecting to WandB run: {cfg.wandb_path}")
+    run = wandb.Api().run(cfg.wandb_path)
+    runner_cfg = load_runner_cfg(run.config)
+    check_representation_matches(task_id, runner_cfg.representation)
+    motion_artifacts = [a for a in run.used_artifacts() if a.type == "motions"]
   command_term = env_cfg.commands["motion"]
   assert isinstance(command_term, MotionCommandCfg)
   motion_names: list[str] = []
@@ -83,6 +97,10 @@ def play(task_id: str, cfg: PlayConfig) -> None:
     )
     motion_names = [a.name.split(":")[0] for a in motion_artifacts]
     print(f"[INFO] Loaded {len(motion_files)} motion(s)")
+  elif cfg.model_dir is not None:
+    raise ValueError(
+      "--model-dir requires --motion_file; offline runs have no W&B motion artifacts"
+    )
 
   env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg=env_cfg, device=device))
 
@@ -90,7 +108,7 @@ def play(task_id: str, cfg: PlayConfig) -> None:
   representation = wm.representation
   dynamics = wm.dynamics
 
-  model_dir = download_model_dir(run)
+  model_dir = local_dir if cfg.model_dir is not None else download_model_dir(run)
   wm.load_bundle(torch.load(model_dir / "world_model.pt", map_location=device))
   dynamics.eval()
 
